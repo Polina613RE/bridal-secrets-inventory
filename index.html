@@ -273,9 +273,11 @@ function renderLocation(loc){
         <button class="btn secondary" onclick="importFile('${loc}')">Import into ${loc}</button>
       </div>
       <div class="helptext">
-        Upload Rochella's existing .xlsx or .csv. Recognizes columns named (any order/case)
-        Item #, Description, Bust, Waist, Height, Retail price, Cost price. This adds new
-        rows &mdash; it won't overwrite items already in the table below.
+        Upload Rochella's existing .xlsx or .csv &mdash; even one combined sheet covering both
+        locations. Recognizes columns named (any order/case) Item #, Description, Bust, Waist,
+        Height, Retail price, Cost price, and Location. If a row's Item # already exists, its
+        location gets updated instead of creating a duplicate &mdash; so a gown that moved
+        between stores just gets moved here too. New item numbers are added as new rows.
       </div>
       <div class="helptext" id="import-status-${loc}"></div>
     </div>
@@ -335,7 +337,8 @@ const HEADER_ALIASES = {
   waist: ["waist"],
   height: ["height","heightinfo","heightinfoskirtlength","skirtlength"],
   retail_price: ["retailprice","retailpriceonnew","retail","price"],
-  cost_price: ["costprice","cost","wholesaleprice","wholesale"]
+  cost_price: ["costprice","cost","wholesaleprice","wholesale"],
+  location: ["location","loc","store","branch"]
 };
 function mapRow(rawRow){
   const entries = Object.entries(rawRow).map(([k,v])=>[normalizeHeader(k), v]);
@@ -354,6 +357,12 @@ function cleanNumber(v){
   return isNaN(n) ? null : n;
 }
 
+function resolveLocation(rawLocation, fallbackLoc){
+  const norm = normalizeHeader(rawLocation || "");
+  const match = LOCATIONS.find(loc => norm.includes(normalizeHeader(loc)));
+  return match || fallbackLoc;
+}
+
 async function importFile(loc){
   const input = document.getElementById("import-"+loc);
   const status = document.getElementById("import-status-"+loc);
@@ -364,51 +373,95 @@ async function importFile(loc){
   try{
     const data = await file.arrayBuffer();
     const workbook = XLSX.read(data, {type:"array"});
+    // If there's a sheet matching this location by name, use it; otherwise use the first
+    // sheet — this also covers the common case of one combined sheet for both locations.
     const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes(loc.toLowerCase())) || workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(sheet, {defval:""});
 
     if(!rows.length){
-      status.textContent = `No rows found in sheet "${sheetName}". If your file has multiple tabs, rename the one you want to include "${loc}" and try again.`;
+      status.textContent = `No rows found in sheet "${sheetName}".`;
       return;
     }
 
     const mapped = rows.map(mapRow).filter(r => r.description || r.item_number);
     if(!mapped.length){
-      status.textContent = `Read sheet "${sheetName}" but couldn't match any recognized column headers (Item #, Description, Bust, Waist, Height, Retail price, Cost price). Check the column names in your file.`;
+      status.textContent = `Read sheet "${sheetName}" but couldn't match any recognized column headers (Item #, Description, Bust, Waist, Height, Retail price, Cost price, Location). Check the column names in your file.`;
       return;
     }
 
-    if(!confirm(`Import ${mapped.length} rows from sheet "${sheetName}" into ${loc}?\n\nThis adds new rows and will not overwrite items already in the table.`)){
+    const hasLocationColumn = mapped.some(r => r.location);
+    const confirmMsg = hasLocationColumn
+      ? `Found a Location column. Import ${mapped.length} rows, placing each in the location listed in the file (defaulting to ${loc} if blank)?\n\nItems whose Item # already exists will have their location updated (handles gowns that moved) rather than being duplicated.`
+      : `Import ${mapped.length} rows into ${loc}?\n\nItems whose Item # already exists will be updated rather than duplicated.`;
+    if(!confirm(confirmMsg)){
       status.textContent = "Import cancelled.";
       return;
     }
 
-    const toInsert = mapped.map(r => ({
-      location: loc,
-      item_number: r.item_number || "",
-      description: r.description || "",
-      bust: r.bust || "",
-      waist: r.waist || "",
-      height: r.height || "",
-      retail_price: cleanNumber(r.retail_price),
-      cost_price: cleanNumber(r.cost_price),
-      status: "active",
-      counted: false
-    }));
+    // Build a lookup of existing items by normalized item number, across ALL locations,
+    // so a gown that moved gets updated instead of duplicated.
+    const existingByItemNumber = {};
+    itemsCache.forEach(i=>{
+      if(i.item_number && String(i.item_number).trim()!==""){
+        existingByItemNumber[normalizeHeader(i.item_number)] = i;
+      }
+    });
 
-    status.textContent = `Importing ${toInsert.length} rows…`;
+    const toInsert = [];
+    const toUpdate = [];
+    mapped.forEach(r=>{
+      const finalLocation = resolveLocation(r.location, loc);
+      const key = r.item_number ? normalizeHeader(r.item_number) : null;
+      const existing = key ? existingByItemNumber[key] : null;
+      if(existing){
+        const patch = { location: finalLocation };
+        if((existing.description===null||existing.description==="") && r.description) patch.description = r.description;
+        if((existing.retail_price===null||existing.retail_price==="") && r.retail_price) patch.retail_price = cleanNumber(r.retail_price);
+        if((existing.cost_price===null||existing.cost_price==="") && r.cost_price) patch.cost_price = cleanNumber(r.cost_price);
+        toUpdate.push({ id: existing.id, patch });
+      } else {
+        toInsert.push({
+          location: finalLocation,
+          item_number: r.item_number || "",
+          description: r.description || "",
+          bust: r.bust || "",
+          waist: r.waist || "",
+          height: r.height || "",
+          retail_price: cleanNumber(r.retail_price),
+          cost_price: cleanNumber(r.cost_price),
+          status: "active",
+          counted: false
+        });
+      }
+    });
+
+    status.textContent = `Importing: ${toInsert.length} new, ${toUpdate.length} updated (moved/matched)…`;
+
     const chunkSize = 200;
     for(let i=0; i<toInsert.length; i+=chunkSize){
       const chunk = toInsert.slice(i, i+chunkSize);
       const { error } = await sb.from("inventory_items").insert(chunk);
       if(error){
-        status.textContent = `Import stopped partway (rows ${i+1}-${i+chunk.length} failed): ${error.message}`;
+        status.textContent = `Import stopped partway adding new rows (${i+1}-${i+chunk.length}): ${error.message}`;
         loadItems();
         return;
       }
     }
-    status.textContent = `Imported ${toInsert.length} rows from sheet "${sheetName}" into ${loc}.`;
+
+    const updateBatchSize = 20;
+    for(let i=0; i<toUpdate.length; i+=updateBatchSize){
+      const batch = toUpdate.slice(i, i+updateBatchSize);
+      const results = await Promise.all(batch.map(u => sb.from("inventory_items").update(u.patch).eq("id", u.id)));
+      const failed = results.find(r => r.error);
+      if(failed){
+        status.textContent = `Import stopped partway updating existing rows: ${failed.error.message}`;
+        loadItems();
+        return;
+      }
+    }
+
+    status.textContent = `Done — added ${toInsert.length} new items, updated ${toUpdate.length} existing items (from sheet "${sheetName}").`;
     input.value = "";
     loadItems();
   } catch(err){
