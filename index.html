@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Bridal Secrets Inventory</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#F6F5F1; --card:#FFFFFF; --line:#E2DFD6; --text:#26241D; --muted:#71695A;
@@ -152,7 +154,7 @@ const SUPABASE_URL = "https://cicxhnmuaqbxwyugpmqn.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpY3hobm11YXFieHd5dWdwbXFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1OTU1MzcsImV4cCI6MjA5OTE3MTUzN30.6tyQoRLOu7VZjUxmZy62Sy1S7EGyEkSmPMUPiMlYEkM";
 
 const LOCATIONS = ["Cedarhurst","Lakewood"];
-let supabase, itemsCache = [], trxCache = [];
+let sb, itemsCache = [], trxCache = [];
 
 function money(n){ n = Number(n)||0; return "$" + n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
@@ -170,16 +172,16 @@ async function initSupabase(){
       return;
     }
 
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    const { data: sessionData, error: sessionError } = await sb.auth.getSession();
     if(sessionError) throw sessionError;
 
     if(!sessionData.session){
-      if(typeof supabase.auth.signInAnonymously !== "function"){
+      if(typeof sb.auth.signInAnonymously !== "function"){
         throw new Error("This version of the Supabase library does not support signInAnonymously. Try reloading the page (it may be a caching issue).");
       }
-      const { error } = await supabase.auth.signInAnonymously();
+      const { error } = await sb.auth.signInAnonymously();
       if(error) throw error;
     }
 
@@ -189,10 +191,10 @@ async function initSupabase(){
     await loadItems();
     await loadTransactions();
 
-    supabase.channel("items-changes")
+    sb.channel("items-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items" }, loadItems)
       .subscribe();
-    supabase.channel("trx-changes")
+    sb.channel("trx-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, loadTransactions)
       .subscribe();
 
@@ -207,13 +209,13 @@ async function initSupabase(){
 }
 
 async function loadItems(){
-  const { data, error } = await supabase.from("inventory_items").select("*").order("created_at", { ascending:true });
+  const { data, error } = await sb.from("inventory_items").select("*").order("created_at", { ascending:true });
   if(error){ console.error(error); return; }
   itemsCache = data || [];
   renderAll();
 }
 async function loadTransactions(){
-  const { data, error } = await supabase.from("transactions").select("*").order("date", { ascending:false });
+  const { data, error } = await sb.from("transactions").select("*").order("date", { ascending:false });
   if(error){ console.error(error); return; }
   trxCache = data || [];
   renderTransactions();
@@ -265,6 +267,19 @@ function renderLocation(loc){
   const locItems = itemsCache.filter(i=>i.location===loc);
   container.innerHTML = `
     <div class="panel">
+      <h2 style="margin:0 0 8px;">Import from spreadsheet</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input type="file" id="import-${loc}" accept=".xlsx,.xls,.csv" style="max-width:280px;">
+        <button class="btn secondary" onclick="importFile('${loc}')">Import into ${loc}</button>
+      </div>
+      <div class="helptext">
+        Upload Rochella's existing .xlsx or .csv. Recognizes columns named (any order/case)
+        Item #, Description, Bust, Waist, Height, Retail price, Cost price. This adds new
+        rows &mdash; it won't overwrite items already in the table below.
+      </div>
+      <div class="helptext" id="import-status-${loc}"></div>
+    </div>
+    <div class="panel">
       <div class="toolbar">
         <h2 style="margin:0;">${loc} inventory</h2>
         <button class="btn" onclick="addItem('${loc}')">+ Add item</button>
@@ -302,19 +317,113 @@ function renderLocation(loc){
 }
 
 async function addItem(loc){
-  await supabase.from("inventory_items").insert({
+  await sb.from("inventory_items").insert({
     location: loc, item_number:"", description:"", bust:"", waist:"", height:"",
     retail_price:null, cost_price:null, status:"active", counted:false
   });
   loadItems();
 }
+
+// ---------- IMPORT FROM SPREADSHEET ----------
+function normalizeHeader(h){
+  return String(h).toLowerCase().replace(/[^a-z0-9]/g,"");
+}
+const HEADER_ALIASES = {
+  item_number: ["item","itemnumber","itemno","itemnum"],
+  description: ["description","desc"],
+  bust: ["bust"],
+  waist: ["waist"],
+  height: ["height","heightinfo","heightinfoskirtlength","skirtlength"],
+  retail_price: ["retailprice","retailpriceonnew","retail","price"],
+  cost_price: ["costprice","cost","wholesaleprice","wholesale"]
+};
+function mapRow(rawRow){
+  const entries = Object.entries(rawRow).map(([k,v])=>[normalizeHeader(k), v]);
+  const out = {};
+  for(const [field, aliases] of Object.entries(HEADER_ALIASES)){
+    for(const [nk, v] of entries){
+      if(aliases.some(a => nk === a || nk.startsWith(a))){ out[field] = v; break; }
+    }
+    if(out[field] !== undefined) continue;
+  }
+  return out;
+}
+function cleanNumber(v){
+  if(v === "" || v === null || v === undefined) return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g,""));
+  return isNaN(n) ? null : n;
+}
+
+async function importFile(loc){
+  const input = document.getElementById("import-"+loc);
+  const status = document.getElementById("import-status-"+loc);
+  const file = input.files[0];
+  if(!file){ status.textContent = "Choose a file first."; return; }
+
+  status.textContent = "Reading file…";
+  try{
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, {type:"array"});
+    const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes(loc.toLowerCase())) || workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, {defval:""});
+
+    if(!rows.length){
+      status.textContent = `No rows found in sheet "${sheetName}". If your file has multiple tabs, rename the one you want to include "${loc}" and try again.`;
+      return;
+    }
+
+    const mapped = rows.map(mapRow).filter(r => r.description || r.item_number);
+    if(!mapped.length){
+      status.textContent = `Read sheet "${sheetName}" but couldn't match any recognized column headers (Item #, Description, Bust, Waist, Height, Retail price, Cost price). Check the column names in your file.`;
+      return;
+    }
+
+    if(!confirm(`Import ${mapped.length} rows from sheet "${sheetName}" into ${loc}?\n\nThis adds new rows and will not overwrite items already in the table.`)){
+      status.textContent = "Import cancelled.";
+      return;
+    }
+
+    const toInsert = mapped.map(r => ({
+      location: loc,
+      item_number: r.item_number || "",
+      description: r.description || "",
+      bust: r.bust || "",
+      waist: r.waist || "",
+      height: r.height || "",
+      retail_price: cleanNumber(r.retail_price),
+      cost_price: cleanNumber(r.cost_price),
+      status: "active",
+      counted: false
+    }));
+
+    status.textContent = `Importing ${toInsert.length} rows…`;
+    const chunkSize = 200;
+    for(let i=0; i<toInsert.length; i+=chunkSize){
+      const chunk = toInsert.slice(i, i+chunkSize);
+      const { error } = await sb.from("inventory_items").insert(chunk);
+      if(error){
+        status.textContent = `Import stopped partway (rows ${i+1}-${i+chunk.length} failed): ${error.message}`;
+        loadItems();
+        return;
+      }
+    }
+    status.textContent = `Imported ${toInsert.length} rows from sheet "${sheetName}" into ${loc}.`;
+    input.value = "";
+    loadItems();
+  } catch(err){
+    console.error(err);
+    status.textContent = "Couldn't read that file: " + (err.message || err);
+  }
+}
+
 async function updateItem(id, field, value){
-  await supabase.from("inventory_items").update({ [field]: value }).eq("id", id);
+  await sb.from("inventory_items").update({ [field]: value }).eq("id", id);
   loadItems();
 }
 async function deleteItem(id){
   if(!confirm("Delete this item?")) return;
-  await supabase.from("inventory_items").delete().eq("id", id);
+  await sb.from("inventory_items").delete().eq("id", id);
   loadItems();
 }
 
@@ -323,7 +432,7 @@ document.getElementById("trx-form").addEventListener("submit", async e=>{
   const f = e.target;
   const amount = Number(f.amount.value)||0;
   const fee = Number(f.fee.value)||0;
-  await supabase.from("transactions").insert({
+  await sb.from("transactions").insert({
     date: f.date.value, trx_number:f.trxNumber.value, contact:f.contact.value,
     associate:f.associate.value, item_number:f.itemNumber.value, type:f.type.value,
     amount, fee, net: amount-fee
@@ -346,7 +455,7 @@ function renderTransactions(){
 }
 async function deleteTrx(id){
   if(!confirm("Delete this transaction?")) return;
-  await supabase.from("transactions").delete().eq("id", id);
+  await sb.from("transactions").delete().eq("id", id);
   loadTransactions();
 }
 
