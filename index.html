@@ -85,7 +85,10 @@
     </div>
 
     <div class="panel">
-      <h2>Completion by location</h2>
+      <div class="toolbar">
+        <h2 style="margin:0;">Completion by location</h2>
+        <button class="btn secondary" onclick="exportItemsCSV()">Export all items (CSV)</button>
+      </div>
       <div id="loc-summary"></div>
     </div>
 
@@ -122,7 +125,9 @@
       </form>
     </div>
     <div class="panel">
-      <div class="toolbar"><h2 style="margin:0;">Transaction log</h2></div>
+      <div class="toolbar"><h2 style="margin:0;">Transaction log</h2>
+        <button class="btn secondary" onclick="exportTransactionsCSV()">Export transactions (CSV)</button>
+      </div>
       <div class="scrollx">
         <table id="trx-table">
           <thead><tr><th>Date</th><th>Trx #</th><th>Contact</th><th>Associate</th><th>Item #</th><th>Type</th><th>Amount</th><th>Fee</th><th>Net</th><th></th></tr></thead>
@@ -284,7 +289,10 @@ function renderLocation(loc){
     <div class="panel">
       <div class="toolbar">
         <h2 style="margin:0;">${loc} inventory</h2>
-        <button class="btn" onclick="addItem('${loc}')">+ Add item</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn secondary" onclick="exportItemsCSV('${loc}')">Export ${loc} (CSV)</button>
+          <button class="btn" onclick="addItem('${loc}')">+ Add item</button>
+        </div>
       </div>
       <div class="scrollx">
         <table>
@@ -326,7 +334,63 @@ async function addItem(loc){
   loadItems();
 }
 
-// ---------- IMPORT FROM SPREADSHEET ----------
+// ---------- CSV EXPORT ----------
+function csvEscape(v){
+  if(v === null || v === undefined) return "";
+  const s = String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function toCSV(rows, columns){
+  const header = columns.map(c=>c.label).join(",");
+  const lines = rows.map(r => columns.map(c => csvEscape(r[c.key])).join(","));
+  return [header, ...lines].join("\r\n");
+}
+function downloadCSV(filename, csvString){
+  const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+function exportItemsCSV(loc){
+  const rows = loc ? itemsCache.filter(i=>i.location===loc) : itemsCache;
+  const columns = [
+    {key:"location", label:"Location"},
+    {key:"item_number", label:"Item #"},
+    {key:"description", label:"Description"},
+    {key:"bust", label:"Bust"},
+    {key:"waist", label:"Waist"},
+    {key:"height", label:"Height"},
+    {key:"retail_price", label:"Retail price"},
+    {key:"cost_price", label:"Cost price"},
+    {key:"status", label:"Status"},
+    {key:"counted", label:"Counted"}
+  ];
+  const csv = toCSV(rows, columns);
+  const datePart = new Date().toISOString().slice(0,10);
+  downloadCSV(`bridal-secrets-inventory${loc ? "-"+loc : ""}-${datePart}.csv`, csv);
+}
+function exportTransactionsCSV(){
+  const columns = [
+    {key:"date", label:"Date"},
+    {key:"trx_number", label:"Trx #"},
+    {key:"contact", label:"Contact"},
+    {key:"associate", label:"Associate"},
+    {key:"item_number", label:"Item #"},
+    {key:"type", label:"Type"},
+    {key:"amount", label:"Amount"},
+    {key:"fee", label:"Fee"},
+    {key:"net", label:"Net"}
+  ];
+  const csv = toCSV(trxCache, columns);
+  const datePart = new Date().toISOString().slice(0,10);
+  downloadCSV(`bridal-secrets-transactions-${datePart}.csv`, csv);
+}
+
 function normalizeHeader(h){
   return String(h).toLowerCase().replace(/[^a-z0-9]/g,"");
 }
