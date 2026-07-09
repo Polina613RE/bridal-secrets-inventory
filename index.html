@@ -148,6 +148,20 @@
         See the README in this repo for step-by-step setup instructions.
       </div>
     </div>
+    <div class="panel">
+      <h2>Data cleanup</h2>
+      <p class="helptext">
+        If a spreadsheet import ever pulls in an unrealistic price (usually from a misread
+        column), use these to clear just the bad values back to blank so they show up on the
+        Dashboard's flagged list for you to re-enter correctly &mdash; nothing else about the
+        item is touched.
+      </p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary" onclick="clearOutlierPrices('cost_price')">Clear cost prices over $50,000</button>
+        <button class="btn secondary" onclick="clearOutlierPrices('retail_price')">Clear retail prices over $50,000</button>
+      </div>
+      <div class="helptext" id="cleanup-status"></div>
+    </div>
   </div>
 
 </main>
@@ -334,6 +348,27 @@ async function addItem(loc){
   loadItems();
 }
 
+async function clearOutlierPrices(field){
+  const threshold = 50000;
+  const label = field === "cost_price" ? "cost price" : "retail price";
+  const statusEl = document.getElementById("cleanup-status");
+  const offenders = itemsCache.filter(i => i[field] !== null && i[field] !== "" && Math.abs(Number(i[field])) > threshold);
+  if(!offenders.length){
+    statusEl.textContent = `No ${label} values over $${threshold.toLocaleString()} found.`;
+    return;
+  }
+  if(!confirm(`Clear ${label} on ${offenders.length} item(s) with values over $${threshold.toLocaleString()}?\n\nThis blanks out just that price field so it shows up as flagged for you to re-enter — nothing else about the item changes.`)){
+    statusEl.textContent = "Cancelled.";
+    return;
+  }
+  statusEl.textContent = "Clearing…";
+  for(const item of offenders){
+    await sb.from("inventory_items").update({ [field]: null }).eq("id", item.id);
+  }
+  statusEl.textContent = `Cleared ${label} on ${offenders.length} item(s). They'll now show as flagged on the Dashboard until re-entered.`;
+  loadItems();
+}
+
 // ---------- CSV EXPORT ----------
 function csvEscape(v){
   if(v === null || v === undefined) return "";
@@ -404,21 +439,29 @@ const HEADER_ALIASES = {
   cost_price: ["costprice","cost","wholesaleprice","wholesale"],
   location: ["location","loc","store","branch"]
 };
+function aliasMatches(nk, alias){
+  if(nk === alias) return true;
+  // Only allow prefix-matching for longer, more specific aliases (e.g. "retailpriceonnew").
+  // Short generic words like "cost" or "price" must match exactly, or they end up
+  // falsely matching unrelated columns like "Cost Notes" or "Costume".
+  return alias.length >= 6 && nk.startsWith(alias);
+}
 function mapRow(rawRow){
   const entries = Object.entries(rawRow).map(([k,v])=>[normalizeHeader(k), v]);
   const out = {};
   for(const [field, aliases] of Object.entries(HEADER_ALIASES)){
     for(const [nk, v] of entries){
-      if(aliases.some(a => nk === a || nk.startsWith(a))){ out[field] = v; break; }
+      if(aliases.some(a => aliasMatches(nk, a))){ out[field] = v; break; }
     }
-    if(out[field] !== undefined) continue;
   }
   return out;
 }
-function cleanNumber(v){
+function cleanNumber(v, max){
   if(v === "" || v === null || v === undefined) return null;
   const n = Number(String(v).replace(/[^0-9.\-]/g,""));
-  return isNaN(n) ? null : n;
+  if(isNaN(n)) return null;
+  if(max !== undefined && Math.abs(n) > max) return null;
+  return n;
 }
 
 function resolveLocation(rawLocation, fallbackLoc){
@@ -472,6 +515,15 @@ async function importFile(loc){
       }
     });
 
+    const PRICE_CAP = 50000; // no single gown is realistically priced above this
+    let skippedPriceCount = 0;
+    function safePrice(raw){
+      if(raw === "" || raw === null || raw === undefined) return null;
+      const n = cleanNumber(raw, PRICE_CAP);
+      if(n === null && String(raw).trim() !== "") skippedPriceCount++;
+      return n;
+    }
+
     const toInsert = [];
     const toUpdate = [];
     mapped.forEach(r=>{
@@ -481,8 +533,8 @@ async function importFile(loc){
       if(existing){
         const patch = { location: finalLocation };
         if((existing.description===null||existing.description==="") && r.description) patch.description = r.description;
-        if((existing.retail_price===null||existing.retail_price==="") && r.retail_price) patch.retail_price = cleanNumber(r.retail_price);
-        if((existing.cost_price===null||existing.cost_price==="") && r.cost_price) patch.cost_price = cleanNumber(r.cost_price);
+        if((existing.retail_price===null||existing.retail_price==="") && r.retail_price) patch.retail_price = safePrice(r.retail_price);
+        if((existing.cost_price===null||existing.cost_price==="") && r.cost_price) patch.cost_price = safePrice(r.cost_price);
         toUpdate.push({ id: existing.id, patch });
       } else {
         toInsert.push({
@@ -492,8 +544,8 @@ async function importFile(loc){
           bust: r.bust || "",
           waist: r.waist || "",
           height: r.height || "",
-          retail_price: cleanNumber(r.retail_price),
-          cost_price: cleanNumber(r.cost_price),
+          retail_price: safePrice(r.retail_price),
+          cost_price: safePrice(r.cost_price),
           status: "active",
           counted: false
         });
@@ -525,7 +577,8 @@ async function importFile(loc){
       }
     }
 
-    status.textContent = `Done — added ${toInsert.length} new items, updated ${toUpdate.length} existing items (from sheet "${sheetName}").`;
+    status.textContent = `Done — added ${toInsert.length} new items, updated ${toUpdate.length} existing items (from sheet "${sheetName}").` +
+      (skippedPriceCount ? ` Skipped ${skippedPriceCount} price value(s) over $${PRICE_CAP.toLocaleString()} as likely misreads — those items are left blank so you can enter the correct price.` : "");
     input.value = "";
     loadItems();
   } catch(err){
