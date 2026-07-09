@@ -1,129 +1,367 @@
-# Bridal Secrets Inventory Dashboard
 
-A shared, web-based inventory tracker for Bridal Secrets (Cedarhurst + Lakewood),
-so Rochella's team can enter counts and cost prices directly, and River Edge
-gets a clean live view of completion status and inventory value.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bridal Secrets Inventory</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#F6F5F1; --card:#FFFFFF; --line:#E2DFD6; --text:#26241D; --muted:#71695A;
+    --accent:#5B6B4F; --accent-light:#E7EBE0; --warn:#9A5B1E; --warn-light:#FBEEDF;
+    --danger:#A32D2D; --danger-light:#FCEBEB; --good:#2E6B4F; --good-light:#E4F0E9;
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--text); font-size:14px;}
+  header{background:#26241D; color:#F6F5F1; padding:18px 24px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;}
+  header h1{font-size:17px; font-weight:600; margin:0;}
+  header .sub{font-size:12px; color:#C9C4B4; margin-top:2px;}
+  #auth-status{font-size:12px; color:#C9C4B4;}
+  nav{display:flex; gap:4px; padding:10px 24px 0; background:#26241D; flex-wrap:wrap;}
+  nav button{background:transparent; border:none; color:#C9C4B4; padding:10px 16px; font-size:13px; cursor:pointer; border-radius:6px 6px 0 0;}
+  nav button.active{background:var(--bg); color:var(--text); font-weight:600;}
+  main{padding:24px; max-width:1180px; margin:0 auto;}
+  .view{display:none;} .view.active{display:block;}
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px;}
+  .card .label{font-size:12px; color:var(--muted); margin-bottom:4px;}
+  .card .value{font-size:22px; font-weight:600;}
+  .panel{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:18px;}
+  .panel h2{font-size:15px; margin:0 0 12px; font-weight:600;}
+  .locbar{display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border:1px solid var(--line); border-radius:8px; margin-bottom:10px; background:#FBFAF7;}
+  .pill{font-size:11px; padding:3px 10px; border-radius:20px; font-weight:600;}
+  .pill.good{background:var(--good-light); color:var(--good);}
+  .pill.warn{background:var(--warn-light); color:var(--warn);}
+  .pill.danger{background:var(--danger-light); color:var(--danger);}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th{text-align:left; font-weight:600; color:var(--muted); padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap;}
+  td{padding:5px 8px; border-bottom:1px solid #EFEDE6; vertical-align:middle;}
+  tr:hover td{background:#FBFAF7;}
+  input,select{width:100%; font-size:13px; padding:5px 6px; border:1px solid var(--line); border-radius:5px; background:#fff; color:var(--text);}
+  input:focus,select:focus{outline:2px solid var(--accent-light); border-color:var(--accent);}
+  .btn{background:var(--accent); color:#fff; border:none; padding:8px 14px; border-radius:6px; font-size:13px; cursor:pointer; font-weight:600;}
+  .btn.secondary{background:transparent; color:var(--accent); border:1px solid var(--accent);}
+  .btn.small{padding:4px 9px; font-size:12px;}
+  .btn.danger{background:var(--danger);}
+  .toolbar{display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:8px; flex-wrap:wrap;}
+  .flagged{background:var(--warn-light) !important;}
+  .helptext{font-size:12px; color:var(--muted); margin-top:6px;}
+  .setup-box{background:var(--warn-light); border:1px solid #EFD9B8; border-radius:8px; padding:14px 16px; font-size:13px; line-height:1.6;}
+  .setup-box code{background:#fff; padding:1px 5px; border-radius:4px; font-size:12px;}
+  footer{text-align:center; font-size:11px; color:var(--muted); padding:20px;}
+  ::placeholder{color:#B8B2A2;}
+  .scrollx{overflow-x:auto;}
+</style>
+</head>
+<body>
 
-It's a single file (`index.html`) hosted free on GitHub Pages, backed by a
-free Supabase database — no Google account needed, sign up with your existing
-GitHub account or any work email.
+<header>
+  <div>
+    <h1>Bridal Secrets Inventory</h1>
+    <div class="sub">Shared inventory tracker &middot; River Edge Advisors + Bridal Secrets</div>
+  </div>
+  <div id="auth-status">Connecting…</div>
+</header>
 
-## One-time setup (about 15 minutes)
+<nav id="nav">
+  <button data-view="dashboard" class="active">Dashboard</button>
+  <button data-view="Cedarhurst">Cedarhurst</button>
+  <button data-view="Lakewood">Lakewood</button>
+  <button data-view="rentals">Rentals &amp; sales</button>
+  <button data-view="setup">Setup</button>
+</nav>
 
-### 1. Create a Supabase account and project
-1. Go to https://supabase.com and click **Start your project**.
-2. Sign up using **Continue with GitHub** (the same GitHub account you used
-   for the 1st Alliance project) — no new password to remember. If you'd
-   rather not use GitHub, you can sign up with any email address instead.
-3. Click **New project**.
-4. Name it `bridal-secrets-inventory`.
-5. Set a database password (write it down somewhere safe — you likely won't
-   need it again, but keep it just in case).
-6. Pick any region close to you, click **Create new project**. It takes
-   about a minute to spin up.
+<main>
 
-### 2. Turn on anonymous sign-in
-This lets Rochella's team use the app without creating individual logins,
-the same way the Google Sheet works today.
-1. In the left sidebar, click **Authentication**.
-2. Click **Providers**.
-3. Find **Anonymous Sign-Ins** in the list and toggle it **on**.
+  <div class="view active" id="view-dashboard">
+    <div class="cards">
+      <div class="card"><div class="label">Gowns tracked</div><div class="value" id="stat-total">–</div></div>
+      <div class="card"><div class="label">Missing cost price</div><div class="value" id="stat-missing">–</div></div>
+      <div class="card"><div class="label">Est. inventory value (retail)</div><div class="value" id="stat-value">–</div></div>
+      <div class="card"><div class="label">Est. inventory value (cost)</div><div class="value" id="stat-cost-value">–</div></div>
+    </div>
 
-### 3. Create the two data tables
-1. In the left sidebar, click **SQL Editor**.
-2. Click **New query**.
-3. Paste this in and click **Run**:
-   ```sql
-   create table inventory_items (
-     id uuid primary key default gen_random_uuid(),
-     location text,
-     item_number text,
-     description text,
-     bust text,
-     waist text,
-     height text,
-     retail_price numeric,
-     cost_price numeric,
-     status text default 'active',
-     counted boolean default false,
-     created_at timestamptz default now()
-   );
+    <div class="panel">
+      <h2>Completion by location</h2>
+      <div id="loc-summary"></div>
+    </div>
 
-   create table transactions (
-     id uuid primary key default gen_random_uuid(),
-     date date,
-     trx_number text,
-     contact text,
-     associate text,
-     item_number text,
-     type text,
-     amount numeric,
-     fee numeric,
-     net numeric,
-     created_at timestamptz default now()
-   );
+    <div class="panel">
+      <h2>Items flagged &mdash; missing cost price</h2>
+      <div class="scrollx">
+        <table id="flag-table">
+          <thead><tr><th>Item #</th><th>Location</th><th>Description</th><th>Retail price</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="helptext" id="flag-empty" style="display:none;">Nothing flagged &mdash; every counted item has a cost price.</div>
+    </div>
+  </div>
 
-   alter table inventory_items enable row level security;
-   alter table transactions enable row level security;
+  <div class="view" id="view-Cedarhurst"></div>
+  <div class="view" id="view-Lakewood"></div>
 
-   create policy "Allow signed-in users" on inventory_items
-     for all using (auth.uid() is not null) with check (auth.uid() is not null);
-   create policy "Allow signed-in users" on transactions
-     for all using (auth.uid() is not null) with check (auth.uid() is not null);
-   ```
-   This creates the two tables and locks them so only people using the app
-   (who get signed in automatically and anonymously) can read or write —
-   random visitors can't touch the data.
+  <div class="view" id="view-rentals">
+    <div class="panel">
+      <h2>Add a transaction</h2>
+      <form id="trx-form" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; align-items:end;">
+        <div><label class="helptext">Date</label><input type="date" name="date" required></div>
+        <div><label class="helptext">Trx #</label><input type="text" name="trxNumber" placeholder="SO 1415"></div>
+        <div><label class="helptext">Contact</label><input type="text" name="contact" placeholder="Customer name"></div>
+        <div><label class="helptext">Associate</label><input type="text" name="associate" placeholder="Staff name"></div>
+        <div><label class="helptext">Item # (optional)</label><input type="text" name="itemNumber" placeholder="CD-118"></div>
+        <div><label class="helptext">Type</label>
+          <select name="type"><option value="Rental">Rental</option><option value="Sale">Sale</option></select>
+        </div>
+        <div><label class="helptext">Amount</label><input type="number" step="0.01" name="amount" placeholder="0.00"></div>
+        <div><label class="helptext">Fee</label><input type="number" step="0.01" name="fee" placeholder="0.00"></div>
+        <div><button class="btn" type="submit">Add transaction</button></div>
+      </form>
+    </div>
+    <div class="panel">
+      <div class="toolbar"><h2 style="margin:0;">Transaction log</h2></div>
+      <div class="scrollx">
+        <table id="trx-table">
+          <thead><tr><th>Date</th><th>Trx #</th><th>Contact</th><th>Associate</th><th>Item #</th><th>Type</th><th>Amount</th><th>Fee</th><th>Net</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
-### 4. Get your API keys
-1. In the left sidebar, click the gear icon > **Project Settings**.
-2. Click **API** in the settings menu.
-3. You'll see a **Project URL** and a **Project API keys** section with an
-   **anon / public** key. Copy both.
+  <div class="view" id="view-setup">
+    <div class="panel">
+      <h2>Connection status</h2>
+      <p id="setup-status" class="helptext">Checking…</p>
+      <div class="setup-box">
+        This app needs a free Supabase project to store data so everyone sees the same information.
+        The <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> near the top of the
+        &lt;script&gt; section in this file need to be filled in before this will work.
+        See the README in this repo for step-by-step setup instructions.
+      </div>
+    </div>
+  </div>
 
-### 5. Paste the keys into index.html
-Open `index.html` in this repo, find this block near the top of the
-`<script>` section:
+</main>
 
-```js
-const SUPABASE_URL = "REPLACE_ME";
-const SUPABASE_ANON_KEY = "REPLACE_ME";
-```
+<footer>Internal tool &middot; River Edge Advisors, LLC</footer>
 
-Replace the two `"REPLACE_ME"` values with your Project URL and anon key.
-Save the file.
+<script>
+const SUPABASE_URL = "https://cicxhnmuaqbxwyugpmqn.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNpY3hobm11YXFieHd5dWdwbXFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1OTU1MzcsImV4cCI6MjA5OTE3MTUzN30.6tyQoRLOu7VZjUxmZy62Sy1S7EGyEkSmPMUPiMlYEkM";
 
-### 6. Put it on GitHub Pages
-1. Create a new GitHub repo (e.g. `bridal-secrets-inventory`).
-2. Upload `index.html` (and this `README.md`) via the GitHub web UI
-   (Add file > Upload files).
-3. Go to the repo's **Settings > Pages**, set **Source** to the `main`
-   branch, root folder, and save.
-4. GitHub will give you a URL like
-   `https://<your-github-username>.github.io/bridal-secrets-inventory/`.
-   That's the link to send Rochella.
+const LOCATIONS = ["Cedarhurst","Lakewood"];
+let sb, itemsCache = [], trxCache = [];
 
-No server, no hosting bill, nothing else to maintain.
+function money(n){ n = Number(n)||0; return "$" + n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
-## What Rochella's team can do
-- **Cedarhurst / Lakewood tabs** — add a row per gown: item #, description,
-  measurements, retail price, cost price, active/dead stock, and a checkbox
-  once physically counted.
-- **Rentals & sales tab** — log each rental or sale (date, transaction #,
-  contact, associate, amount, fee) — net calculates automatically.
+async function initSupabase(){
+  try{
+    if(SUPABASE_URL === "REPLACE_ME" || SUPABASE_ANON_KEY === "REPLACE_ME"){
+      document.getElementById("auth-status").textContent = "Not connected — see Setup tab";
+      document.getElementById("setup-status").textContent = "SUPABASE_URL / SUPABASE_ANON_KEY have not been filled in yet.";
+      switchView("setup");
+      return;
+    }
+    if(!window.supabase || !window.supabase.createClient){
+      document.getElementById("auth-status").textContent = "Library failed to load";
+      document.getElementById("setup-status").textContent = "The Supabase library did not load from the CDN. Check your internet connection and reload.";
+      return;
+    }
 
-## What you see on the Dashboard tab
-- Total gowns tracked, how many are missing a cost price, and estimated
-  inventory value at both retail and cost.
-- Completion percentage per location.
-- A flagged list of every counted item still missing a cost price — your
-  live follow-up list instead of combing through a spreadsheet.
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-## Notes / next steps to discuss
-- Right now anyone with the link can enter data (no individual logins) —
-  matches how the Google Sheet works today.
-- The "Rentals & sales" log is manual entry for now. If you want it to pull
-  directly from Bridal Live exports, that's a good follow-on (an import
-  button reading a CSV) — let me know if that's worth building next.
-- Once populated, "current inventory value" for the balance sheet becomes a
-  read of the Dashboard tab instead of a manual reconciliation.
+    const { data: sessionData, error: sessionError } = await sb.auth.getSession();
+    if(sessionError) throw sessionError;
+
+    if(!sessionData.session){
+      if(typeof sb.auth.signInAnonymously !== "function"){
+        throw new Error("This version of the Supabase library does not support signInAnonymously. Try reloading the page (it may be a caching issue).");
+      }
+      const { error } = await sb.auth.signInAnonymously();
+      if(error) throw error;
+    }
+
+    document.getElementById("auth-status").textContent = "Connected";
+    document.getElementById("setup-status").textContent = "Connected to Supabase.";
+
+    await loadItems();
+    await loadTransactions();
+
+    sb.channel("items-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items" }, loadItems)
+      .subscribe();
+    sb.channel("trx-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, loadTransactions)
+      .subscribe();
+
+  } catch(err){
+    console.error("Supabase init error:", err);
+    const msg = (err && err.message) ? err.message : String(err);
+    document.getElementById("auth-status").textContent = "Connection error";
+    document.getElementById("setup-status").textContent = "Error: " + msg +
+      ". Double-check Anonymous Sign-Ins is enabled (Authentication > Providers) and that the URL/key were pasted correctly.";
+    switchView("setup");
+  }
+}
+
+async function loadItems(){
+  const { data, error } = await sb.from("inventory_items").select("*").order("created_at", { ascending:true });
+  if(error){ console.error(error); return; }
+  itemsCache = data || [];
+  renderAll();
+}
+async function loadTransactions(){
+  const { data, error } = await sb.from("transactions").select("*").order("date", { ascending:false });
+  if(error){ console.error(error); return; }
+  trxCache = data || [];
+  renderTransactions();
+}
+
+function renderAll(){
+  renderDashboard();
+  LOCATIONS.forEach(renderLocation);
+}
+
+function renderDashboard(){
+  const total = itemsCache.length;
+  const missing = itemsCache.filter(i => !i.cost_price || Number(i.cost_price)===0);
+  const retailValue = itemsCache.reduce((s,i)=>s+(Number(i.retail_price)||0),0);
+  const costValue = itemsCache.reduce((s,i)=>s+(Number(i.cost_price)||0),0);
+
+  document.getElementById("stat-total").textContent = total;
+  document.getElementById("stat-missing").textContent = missing.length;
+  document.getElementById("stat-value").textContent = money(retailValue);
+  document.getElementById("stat-cost-value").textContent = money(costValue);
+
+  const locSummary = document.getElementById("loc-summary");
+  locSummary.innerHTML = "";
+  LOCATIONS.forEach(loc=>{
+    const locItems = itemsCache.filter(i=>i.location===loc);
+    const counted = locItems.filter(i=>i.counted).length;
+    const pct = locItems.length ? Math.round(100*counted/locItems.length) : 0;
+    const pillClass = pct>=100 ? "good" : pct>=60 ? "warn" : "danger";
+    const div = document.createElement("div");
+    div.className = "locbar";
+    div.innerHTML = `<div><strong>${loc}</strong><div class="helptext">${counted} of ${locItems.length} items marked counted</div></div>
+      <span class="pill ${pillClass}">${locItems.length ? pct+"% counted" : "no items yet"}</span>`;
+    locSummary.appendChild(div);
+  });
+
+  const flagBody = document.querySelector("#flag-table tbody");
+  flagBody.innerHTML = "";
+  const flagged = itemsCache.filter(i => i.counted && (!i.cost_price || Number(i.cost_price)===0));
+  flagged.forEach(i=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i.item_number||""}</td><td>${i.location||""}</td><td>${i.description||""}</td><td>${i.retail_price?money(i.retail_price):"—"}</td>`;
+    flagBody.appendChild(tr);
+  });
+  document.getElementById("flag-empty").style.display = flagged.length ? "none":"block";
+}
+
+function renderLocation(loc){
+  const container = document.getElementById("view-"+loc);
+  const locItems = itemsCache.filter(i=>i.location===loc);
+  container.innerHTML = `
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0;">${loc} inventory</h2>
+        <button class="btn" onclick="addItem('${loc}')">+ Add item</button>
+      </div>
+      <div class="scrollx">
+        <table>
+          <thead><tr>
+            <th>Item #</th><th>Description</th><th>Bust</th><th>Waist</th><th>Height</th>
+            <th>Retail price</th><th>Cost price</th><th>Status</th><th>Counted?</th><th></th>
+          </tr></thead>
+          <tbody id="tbody-${loc}"></tbody>
+        </table>
+      </div>
+    </div>`;
+  const tbody = document.getElementById("tbody-"+loc);
+  locItems.forEach(item=>{
+    const tr = document.createElement("tr");
+    if(item.counted && (!item.cost_price || Number(item.cost_price)===0)) tr.classList.add("flagged");
+    tr.innerHTML = `
+      <td><input value="${item.item_number||""}" onchange="updateItem('${item.id}','item_number',this.value)"></td>
+      <td><input value="${item.description||""}" onchange="updateItem('${item.id}','description',this.value)"></td>
+      <td><input value="${item.bust||""}" style="width:60px" onchange="updateItem('${item.id}','bust',this.value)"></td>
+      <td><input value="${item.waist||""}" style="width:60px" onchange="updateItem('${item.id}','waist',this.value)"></td>
+      <td><input value="${item.height||""}" style="width:60px" onchange="updateItem('${item.id}','height',this.value)"></td>
+      <td><input type="number" step="0.01" value="${item.retail_price||""}" style="width:90px" onchange="updateItem('${item.id}','retail_price',this.value)"></td>
+      <td><input type="number" step="0.01" value="${item.cost_price||""}" style="width:90px" onchange="updateItem('${item.id}','cost_price',this.value)"></td>
+      <td><select onchange="updateItem('${item.id}','status',this.value)">
+            <option ${item.status==="active"?"selected":""} value="active">Active</option>
+            <option ${item.status==="dead stock"?"selected":""} value="dead stock">Dead stock</option>
+          </select></td>
+      <td style="text-align:center;"><input type="checkbox" ${item.counted?"checked":""} onchange="updateItem('${item.id}','counted',this.checked)"></td>
+      <td><button class="btn small danger" onclick="deleteItem('${item.id}')">Delete</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function addItem(loc){
+  await sb.from("inventory_items").insert({
+    location: loc, item_number:"", description:"", bust:"", waist:"", height:"",
+    retail_price:null, cost_price:null, status:"active", counted:false
+  });
+  loadItems();
+}
+async function updateItem(id, field, value){
+  await sb.from("inventory_items").update({ [field]: value }).eq("id", id);
+  loadItems();
+}
+async function deleteItem(id){
+  if(!confirm("Delete this item?")) return;
+  await sb.from("inventory_items").delete().eq("id", id);
+  loadItems();
+}
+
+document.getElementById("trx-form").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const f = e.target;
+  const amount = Number(f.amount.value)||0;
+  const fee = Number(f.fee.value)||0;
+  await sb.from("transactions").insert({
+    date: f.date.value, trx_number:f.trxNumber.value, contact:f.contact.value,
+    associate:f.associate.value, item_number:f.itemNumber.value, type:f.type.value,
+    amount, fee, net: amount-fee
+  });
+  f.reset();
+  loadTransactions();
+});
+
+function renderTransactions(){
+  const tbody = document.querySelector("#trx-table tbody");
+  tbody.innerHTML = "";
+  trxCache.forEach(t=>{
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${t.date||""}</td><td>${t.trx_number||""}</td><td>${t.contact||""}</td>
+      <td>${t.associate||""}</td><td>${t.item_number||""}</td><td>${t.type||""}</td>
+      <td>${money(t.amount)}</td><td>${money(t.fee)}</td><td>${money(t.net)}</td>
+      <td><button class="btn small danger" onclick="deleteTrx('${t.id}')">Delete</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+async function deleteTrx(id){
+  if(!confirm("Delete this transaction?")) return;
+  await sb.from("transactions").delete().eq("id", id);
+  loadTransactions();
+}
+
+document.getElementById("nav").addEventListener("click", e=>{
+  const btn = e.target.closest("button");
+  if(!btn) return;
+  switchView(btn.dataset.view);
+});
+function switchView(view){
+  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
+  document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active", v.id==="view-"+view));
+}
+
+initSupabase();
+</script>
+</body>
+</html>
